@@ -1,0 +1,103 @@
+runtime:
+  debug_mode: True                   # ✅ 核心开关：True=本地调试 | False=服务器多卡训练
+  # -------------------------- GPU/DDP核心参数（动态适配本地/服务器） --------------------------
+  physical_gpu_id: 0                                # 仅本地生效：固定用GPU 0（服务器代码不读取）
+  target_gpus: [1,2,4,6]                                # GPU列表：本地仅模拟 | 服务器实际使用
+  use_ddp: ${if:${debug_mode},false,true}           # 是否开DDP：本地关 | 服务器开
+  use_fake_ddp: ${if:${debug_mode},true,false}      # 伪DDP：本地用（模拟接口）| 服务器不用
+  ddp_port: 29501                                   # DDP通信端口：本地/服务器统一
+  master_addr: "127.0.0.1"                          # 主节点地址：单机多卡固定值
+  master_port: 29501                                # 服务器DDP端口：和ddp_port保持一致
+  nproc: null                                       # 服务器进程数：自动适配GPU数量
+  # -------------------------- 数据加载/批量配置（动态适配本地/服务器） --------------------------
+  batch_size: ${if:${debug_mode},2,2}                # 单卡训练batch：本地1 | 服务器1（可按需调整）
+  val_batch_size: ${if:${debug_mode},2,2}            # 单卡验证batch：本地2 | 服务器2
+  pred_batch_size: ${if:${debug_mode},1,1}           # 预测batch：本地1 | 服务器1
+  workers: ${if:${debug_mode},0,8}                   # 加载线程数：本地0（避免冲突）| 服务器8（高效）
+  persistent_workers: ${if:${debug_mode},false,true} # 常驻进程：本地关 | 服务器开（加速加载）
+  pin_memory: ${if:${debug_mode},false,true}         # 页锁定内存：本地关（省CPU）| 服务器开（加速GPU传输）
+# ===================== 通用配置 (Common Config) =====================
+common:
+  seed: 1                          # 随机种子，保证训练可复现
+  project: "./runs/train"          # 训练日志/权重保存根目录
+  project_val: "./runs/val"        # 验证日志保存目录
+  name: "exp1"                     # 实验名称（会创建 project/name 目录）
+  mixed_precision: true            # 4090必开混合精度（节省50%显存）
+  accum_freq: 4                    # 梯度累积步数从2→4（等效总batch=base_batch_1×4-gpu×4-accum_freq=16，保证收敛）
+  accum_after_epoch: 20            # 20epoch后开始梯度累积
+  log_freq: 200                    # 多卡迭代快，提高日志打印频率
+  auto_resume: true                # 自动恢复最近检查点
+# ===================== 数据集配置 (Dataset Config) =====================
+dataset:
+  # 数据集根路径（支持Windows/Linux自动适配，建议统一为绝对路径）
+  root_path: "E:/Python-master/dataset"
+  #root_path: "/opt/data/private/mengjunying/dataset"
+  #root_path: "E:/python-project/dataset"
+  # -------------------------- 训练集路径 --------------------------
+  # NYU深度估计数据集
+  train_clean: "/nyu/image"        # NYU原始图像路径
+  train_depth: "/nyu/depth"        # NYU深度图路径
+  # KITTI自动驾驶数据集
+  train_path_image_2: "/KITTI/object/data_object_image_2/training/image_2"
+  train_path_calib: "/KITTI/object/data_object_image_2/training/calib"
+  train_path_label_2: "/KITTI/object/data_object_label_2/training/label_2"
+  train_path_velodyne: "/KITTI/object/data_object_velodyne/data_object_velodyne/training/velodyne"
+  # UIEB水下图像增强数据集
+  train_under: "/UIEB_ori/raw-890" # 水下原始图像
+  train_underE: "/UIEB_ori/reference" # 水下参考图像
+  # -------------------------- 验证集路径 --------------------------
+  val_under: "/UIEB_ori/raw-890"    # 水下验证图像
+  val_underE: "/UIEB_ori/reference" # 水下验证标签
+  val_batch_size: 2
+  #-----------------------------------------------------------------
+  pred_under: "/LSUI/high_resolution"    # 水下验证图像
+  pred_underE: "/LSUI/high_resolution" # 水下验证标签
+  pred_batch_size: 1
+# ===================== 采样器配置 (Sampler Config) =====================
+sampler:
+  name: "variable_batch_sampler"   # 可变批量采样器
+  vbs:
+    scale_inc: true                # 递增裁剪尺寸（提升泛化性）
+    scale_inc_factor: 0.25         # 尺寸递增因子
+    ep_intervals: [1500]        # 尺寸递增的epoch区间
+    max_n_scales: 5                # 最大缩放次数
+    # 裁剪尺寸（4090显存充足，设384×384平衡精度和速度）
+    crop_size_width: 256
+    crop_size_height: 256
+    min_crop_size_width: 256
+    max_crop_size_width: 320
+    min_crop_size_height: 256
+    max_crop_size_height: 320
+    check_scale: 32                # 尺寸校验步长（需为64倍数）
+# ===================== 优化器配置 (Optimizer Config) =====================
+optim:
+  name: "adamw"                    # 4090多卡推荐adamw（收敛更稳）
+  weight_decay: 0.0004              # 多卡batch大，降低权重衰减（避免过正则）
+  no_decay_bn_filter_bias: true    # BN/偏置不衰减（提升训练稳定性）
+  adamw:
+    beta1: 0.9                     # 基础参数（固定）
+    beta2: 0.999                   # 多卡训练建议0.999（避免梯度波动）
+# ===================== 学习率调度器 (Scheduler Config) =====================
+scheduler:
+  name: "cosine"                   # 余弦调度器（多卡训练收敛快）
+  is_iteration_based: true         # 多卡按迭代更新LR（更精准）
+  max_epochs: 1000                 # 多卡训练快，减少总epoch（原1500→1000）
+  period_epochs: 300               # 余弦周期（适配1000epoch）
+  warmup_iterations: 1000          # 预热迭代数（多卡大batch，预热稍长）
+  max_iterations: 50000            # 最大迭代数（按4卡总batch计算）
+  warmup_init_lr: 1e-5             # 预热初始LR（降低避免NaN）
+  lr: 2e-4                         # 基础LR（4卡总batch=16，适当提高加速收敛）
+  cosine:
+    max_lr: 4e-4                   # 余弦最大LR（4090多卡适配）
+    min_lr: 1e-5                   # 余弦最小LR（避免LR过低）
+# ===================== 模型配置 (Model Config) =====================
+model:
+  pretrained: "./runs/train/exp1/weights/checkpoint620.pt"  # 预训练权重路径（null=从头训练）
+
+# ===================== 评估指标 (Stats Config) =====================
+stats:
+  name: ["total_loss", "loss_color", "loss_aux_J", "loss_cmd", "psnr"]  # 监控的指标名称
+  checkpoint_metric: ["total_loss", "loss_color", "loss_aux_J", "loss_cmd", "psnr"]  # 保存检查点的指标
+  checkpoint_metric_min: true      # 指标是否越小越好（psnr则设为false）
+
+
